@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Certificate page - content check</title>
+<script src="vendor/pdf.min.js"></script>
+<script src="vendor/pdf-lib.min.js"></script>
+<style>
+ body { font: 13px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif; margin: 24px; background:#f6f7f9; }
+ pre { background:#fff; padding:12px; border-radius:8px; border:1px solid #e5e7eb;
+       white-space:pre-wrap; font-size:12px; }
+ .ok { color:#047857; } .bad { color:#b91c1c; font-weight:600; }
+</style>
+</head>
+<body>
+<h1>Certificate page - extracted text</h1>
+<div id="checks"></div>
+<pre id="dump">running…</pre>
+
+<script type="module">
+import { stampAndCertify } from './js/stamp.js';
+import { browserFacts } from './js/client-context.js';
+
+const { PDFDocument } = window.PDFLib;
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdf.worker.min.js';
+
+const PRIOR_HASH = '2f2422f65899a1c4d0e7b3f8a9016c5d2e4471bb8c3a5f9d0e2b7c41a68d3f05';
+
+const src = await PDFDocument.create();
+src.addPage([595.28, 841.89]).drawText('Original document', { x: 60, y: 700, size: 12 });
+const original = await src.save();
+
+const signed = await stampAndCertify({
+  documentBytes: original,
+  box: { page: 1, x: 62.2, y: 193.09, w: 160, h: 44 },
+  signatureDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  signerName: 'Dillin Nair',
+  signerRole: 'Employee',
+  signMethod: 'Drawn',
+  signedAt: '2026-09-03T09:42:00Z',
+  consentStatement: 'I agree that my electronic signature is the legal equivalent of my handwritten signature.',
+  serverIp: '182.48.210.250',
+  browser: { ...browserFacts(), timezone: 'Asia/Kolkata', language: 'en-GB' },
+  location: { locationStatus: 'Granted', latitude: 18.5204, longitude: 73.8567, accuracy: 24 },
+  timeline: [{
+    name: 'Priya Sharma', role: 'Admin', signedAt: '2026-09-03T07:11:15Z',
+    ip: '203.0.113.44', hash: PRIOR_HASH,
+  }],
+});
+
+// Read the certificate page back out with PDF.js.
+const doc = await pdfjsLib.getDocument({ data: signed.slice(0) }).promise;
+const last = await doc.getPage(doc.numPages);
+const content = await last.getTextContent();
+const text = content.items.map((i) => i.str).join(' ').replace(/\s+/g, ' ');
+
+document.getElementById('dump').textContent = text;
+
+const required = [
+  ['title', 'Certificate of electronic signature'],
+  ['who signed section', 'WHO SIGNED'],
+  ['signer name', 'Dillin Nair'],
+  ['signer role', 'Employee'],
+  ['when section', 'WHEN'],
+  ['server section, kept separate', 'OBSERVED BY THE SERVER'],
+  ['server-observed IP', '182.48.210.250'],
+  ['browser section, kept separate', 'REPORTED BY THE BROWSER'],
+  ['browser timezone', 'Asia/Kolkata'],
+  ['location', '18.5204'],
+  ['prior-signature section', 'SIGNED BEFORE THIS SIGNATURE'],
+  ['earlier signer name', 'Priya Sharma'],
+  ['earlier signer IP', '203.0.113.44'],
+  ['the hash chain: previous hash printed', PRIOR_HASH.slice(0, 32)],
+  ['consent section', 'CONSENT GIVEN'],
+  ['consent verbatim', 'legal equivalent of my handwritten signature'],
+  ['unverified-values note', 'not been independently verified'],
+  ['proxy/VPN caveat', 'VPN'],
+];
+
+const box = document.getElementById('checks');
+let bad = 0;
+for (const [label, needle] of required) {
+  const ok = text.includes(needle);
+  if (!ok) bad++;
+  box.insertAdjacentHTML('beforeend',
+    `<div class="${ok ? 'ok' : 'bad'}">${ok ? 'PASS' : 'FAIL'} — ${label}</div>`);
+}
+
+// The server section must appear BEFORE the browser section, so the reader
+// meets the verified value first.
+const sOrder = text.indexOf('OBSERVED BY THE SERVER') < text.indexOf('REPORTED BY THE BROWSER');
+if (!sOrder) bad++;
+box.insertAdjacentHTML('beforeend',
+  `<div class="${sOrder ? 'ok' : 'bad'}">${sOrder ? 'PASS' : 'FAIL'} — server section precedes browser section</div>`);
+
+document.title = bad ? `${bad} FAILED` : 'ALL PASSED';
+window.__certResult = bad ? `${bad} failed` : 'all passed';
+</script>
+</body>
+</html>

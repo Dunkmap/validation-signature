@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Signing page - checks</title>
+<script src="vendor/pdf.min.js"></script>
+<script src="vendor/pdf-lib.min.js"></script>
+<style>
+  body { font: 14px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif; margin: 24px;
+         background: #f6f7f9; color: #111827; }
+  h1 { font-size: 18px; }
+  .t { padding: 6px 10px; border-left: 3px solid #ccc; margin: 4px 0;
+       background: #fff; border-radius: 0 6px 6px 0; }
+  .pass { border-left-color: #047857; }
+  .fail { border-left-color: #b91c1c; background: #fef2f2; }
+  .name { font-weight: 600; }
+  .detail { color: #6b7280; font-size: 12px; font-family: ui-monospace, Consolas, monospace; }
+  #summary { font-weight: 600; margin: 16px 0; padding: 10px; border-radius: 6px; background: #fff; }
+</style>
+</head>
+<body>
+<h1>Signing page - checks</h1>
+<div id="summary">Running…</div>
+<div id="out"></div>
+
+<script type="module">
+import { boxToCssPercent } from './js/viewer.js';
+import { LOCATION_STATUS, browserFacts } from './js/client-context.js';
+import { FACES } from './js/signature-maker.js';
+import { stampAndCertify } from './js/stamp.js';
+
+let pass = 0, fail = 0;
+const out = document.getElementById('out');
+
+function check(name, fn) {
+  let ok = false, detail = '';
+  try {
+    const r = fn();
+    ok = r === true || r === undefined;
+    if (typeof r === 'string') { ok = false; detail = r; }
+  } catch (e) { detail = e.message; }
+  ok ? pass++ : fail++;
+  out.insertAdjacentHTML('beforeend',
+    `<div class="t ${ok ? 'pass' : 'fail'}"><span class="name">${ok ? 'PASS' : 'FAIL'} — ${name}</span>`
+    + (detail ? `<div class="detail">${detail}</div>` : '') + '</div>');
+}
+
+async function checkAsync(name, fn) {
+  let ok = false, detail = '';
+  try { const r = await fn(); ok = true; if (typeof r === 'string') { ok = false; detail = r; } }
+  catch (e) { detail = e.message; }
+  ok ? pass++ : fail++;
+  out.insertAdjacentHTML('beforeend',
+    `<div class="t ${ok ? 'pass' : 'fail'}"><span class="name">${ok ? 'PASS' : 'FAIL'} — ${name}</span>`
+    + (detail ? `<div class="detail">${detail}</div>` : '') + '</div>');
+}
+
+/* --- THE COORDINATE TRAP ---
+   A box near the BOTTOM of a PDF (small y) must land near the BOTTOM of the
+   screen (large top %). If this inverts, the box appears mirrored down the page. */
+check('coordinate flip: low PDF y maps to high screen top%', () => {
+  const r = boxToCssPercent({ page: 1, x: 0, y: 50, w: 100, h: 50 }, 600, 800);
+  // y=50, h=50 -> top = (800-50-50)/800 = 87.5%
+  const top = parseFloat(r.top);
+  if (Math.abs(top - 87.5) > 0.01) return `expected 87.5%, got ${r.top}`;
+  return true;
+});
+
+check('coordinate flip: high PDF y maps to low screen top%', () => {
+  const r = boxToCssPercent({ page: 1, x: 0, y: 700, w: 100, h: 50 }, 600, 800);
+  // (800-700-50)/800 = 6.25%
+  const top = parseFloat(r.top);
+  if (Math.abs(top - 6.25) > 0.01) return `expected 6.25%, got ${r.top}`;
+  return true;
+});
+
+check('coordinate flip: spec example (y=193.09, h=44, A4)', () => {
+  const r = boxToCssPercent({ page: 1, x: 62.2, y: 193.09, w: 160, h: 44 }, 595.28, 841.89);
+  const expected = ((841.89 - 193.09 - 44) / 841.89) * 100;
+  if (Math.abs(parseFloat(r.top) - expected) > 0.01) return `got ${r.top}, expected ${expected}%`;
+  if (Math.abs(parseFloat(r.left) - (62.2 / 595.28) * 100) > 0.01) return `left wrong: ${r.left}`;
+  return true;
+});
+
+check('coordinate flip: box is not inverted (top+height stays on page)', () => {
+  const r = boxToCssPercent({ page: 1, x: 0, y: 193.09, w: 160, h: 44 }, 595.28, 841.89);
+  const sum = parseFloat(r.top) + parseFloat(r.height);
+  if (sum > 100.01) return `box runs off the page: top+height = ${sum}%`;
+  return true;
+});
+
+/* --- restricted values --- */
+check('locationStatus values match Salesforce exactly', () => {
+  const allowed = ['Granted', 'Denied', 'Unavailable', 'Not requested'];
+  const actual = Object.values(LOCATION_STATUS);
+  const bad = actual.filter((v) => !allowed.includes(v));
+  if (bad.length) return `unexpected values: ${bad.join(', ')}`;
+  if (actual.length !== 4) return `expected 4 values, got ${actual.length}`;
+  return true;
+});
+
+/* --- the four faces must be four distinct real stacks --- */
+check('four typed faces, each a real font stack (not bare cursive)', () => {
+  if (FACES.length !== 4) return `expected 4 faces, got ${FACES.length}`;
+  const stacks = new Set(FACES.map((f) => f.stack));
+  if (stacks.size !== 4) return 'two faces share a stack - they would render identically';
+  const bare = FACES.filter((f) => !/"/.test(f.stack));
+  if (bare.length) return `no named family in: ${bare.map((f) => f.id).join(', ')}`;
+  return true;
+});
+
+/* The spec's warning made testable: it is not enough for the stacks to DIFFER
+   as strings - they must RESOLVE to different fonts once in the DOM. An inline
+   style attribute silently voids them (the family names carry double quotes),
+   which a string comparison cannot see. */
+check('the four faces resolve to four distinct rendered fonts', () => {
+  const host = document.createElement('div');
+  host.style.cssText = 'position:absolute;visibility:hidden;left:-9999px';
+  document.body.appendChild(host);
+  const ctx = document.createElement('canvas').getContext('2d');
+  const widths = FACES.map((f) => {
+    const b = document.createElement('button');
+    b.style.fontFamily = f.stack;         // the same way the modal sets it
+    host.appendChild(b);
+    const resolved = getComputedStyle(b).fontFamily;
+    if (!resolved || resolved === 'Arial') return null;  // attribute was voided
+    ctx.font = '40px ' + resolved;
+    return Math.round(ctx.measureText('Dillin Nair').width * 100) / 100;
+  });
+  host.remove();
+  if (widths.some((w) => w === null)) return 'a face did not apply its stack at all';
+  const distinct = new Set(widths).size;
+  if (distinct < 3) {
+    return `only ${distinct} of 4 faces render differently (widths ${widths.join(', ')}) `
+         + '- they would look like a bug to a signer';
+  }
+  return true;
+});
+
+check('browserFacts reports the fields the certificate needs', () => {
+  const b = browserFacts();
+  for (const k of ['userAgent','language','platform','screen','timezone','browser','os','deviceType']) {
+    if (!b[k]) return `missing ${k}`;
+  }
+  return true;
+});
+
+/* --- the real thing: stamp a document and read it back --- */
+await checkAsync('stampAndCertify produces a valid, larger PDF with a certificate page', async () => {
+  const { PDFDocument, rgb } = window.PDFLib;
+  const src = await PDFDocument.create();
+  const p = src.addPage([595.28, 841.89]);
+  p.drawText('Original page', { x: 60, y: 700, size: 12 });
+  const originalBytes = await src.save();
+
+  // a 1x1 png
+  const sig = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  const outBytes = await stampAndCertify({
+    documentBytes: originalBytes,
+    box: { page: 1, x: 62.2, y: 193.09, w: 160, h: 44 },
+    signatureDataUrl: sig,
+    signerName: 'Dillin Nair',
+    signerRole: 'Employee',
+    signMethod: 'Drawn',
+    signedAt: new Date().toISOString(),
+    consentStatement: 'I agree that my electronic signature is the legal equivalent of my handwritten signature.',
+    serverIp: '182.48.210.250',
+    browser: browserFacts(),
+    location: { locationStatus: 'Granted', latitude: 18.5204, longitude: 73.8567, accuracy: 24 },
+    timeline: [{
+      name: 'Priya Sharma', role: 'Admin', signedAt: '2026-09-03T07:11:15Z',
+      ip: '203.0.113.44',
+      hash: '2f2422f65899a1c4d0e7b3f8a9016c5d2e4471bb8c3a5f9d0e2b7c41a68d3f05',
+    }],
+  });
+
+  const magic = String.fromCharCode(...outBytes.subarray(0, 4));
+  if (magic !== '%PDF') return `output is not a PDF, magic bytes = ${magic}`;
+
+  const reloaded = await PDFDocument.load(outBytes);
+  if (reloaded.getPageCount() !== 2) return `expected 2 pages (original + certificate), got ${reloaded.getPageCount()}`;
+  if (outBytes.length <= originalBytes.length) return 'output is not larger than the original';
+
+  window.__stamped = outBytes;
+  return true;
+});
+
+/* --- a long hash must not run off the certificate page --- */
+await checkAsync('64-char hash wraps rather than overflowing the page', async () => {
+  const { PDFDocument } = window.PDFLib;
+  const src = await PDFDocument.create();
+  src.addPage([595.28, 841.89]);
+  const bytes = await src.save();
+  const sig = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const out = await stampAndCertify({
+    documentBytes: bytes,
+    box: { page: 1, x: 60, y: 190, w: 160, h: 44 },
+    signatureDataUrl: sig,
+    signerName: 'A Very Long Name Indeed For Wrapping Purposes',
+    signerRole: 'Employee', signMethod: 'Typed',
+    signedAt: new Date().toISOString(),
+    consentStatement: 'x '.repeat(300),
+    serverIp: '182.48.210.250',
+    browser: browserFacts(),
+    location: { locationStatus: 'Denied' },
+    timeline: Array.from({ length: 6 }, (_, i) => ({
+      name: `Signer ${i + 1}`, role: 'Approver', signedAt: '2026-09-03T07:11:15Z',
+      ip: '203.0.113.44', hash: 'f'.repeat(64),
+    })),
+  });
+  const doc = await PDFDocument.load(out);
+  // Long content must spill onto extra pages rather than being clipped.
+  if (doc.getPageCount() < 3) return `expected the certificate to run to extra pages, got ${doc.getPageCount()}`;
+  return true;
+});
+
+/* --- SHA-256 must be available; the mock and the real server both need it --- */
+await checkAsync('crypto.subtle SHA-256 is available on this origin', async () => {
+  if (!crypto?.subtle) return 'crypto.subtle unavailable - are you on http://127.0.0.1 rather than file://?';
+  const h = await crypto.subtle.digest('SHA-256', new Uint8Array([1, 2, 3]));
+  if (new Uint8Array(h).length !== 32) return 'unexpected digest length';
+  return true;
+});
+
+const s = document.getElementById('summary');
+s.textContent = `${pass} passed, ${fail} failed`;
+s.style.background = fail ? '#fef2f2' : '#ecfdf5';
+s.style.color = fail ? '#b91c1c' : '#047857';
+document.title = fail ? `${fail} FAILED` : `${pass} passed`;
+</script>
+</body>
+</html>

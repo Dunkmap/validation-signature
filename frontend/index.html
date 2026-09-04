@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Sign document</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='13' font-size='13'%3E%E2%9C%8D%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/css/style.css">
+<!-- Tells the page where the API lives; served by the frontend server so the
+     same files work locally and in production. Must load before app.js. -->
+<script src="/config.js"></script>
+<script src="/vendor/pdf.min.js"></script>
+<script src="/vendor/pdf-lib.min.js"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">Document signing</div>
+  <div class="topbar-doc" id="topbarDoc"></div>
+</header>
+
+<!-- 1. Loading -->
+<main id="screen-loading" class="screen center">
+  <div class="spinner" aria-hidden="true"></div>
+  <p>Loading your document…</p>
+</main>
+
+<!-- 2. Refused: expired, already signed, or not your turn -->
+<main id="screen-refused" class="screen center" hidden>
+  <div class="card notice">
+    <h1 id="refusedTitle">This link cannot be opened</h1>
+    <p id="refusedBody"></p>
+    <p class="waiting-on" id="refusedWaiting" hidden>
+      Waiting on <strong id="refusedWaitingName"></strong>
+    </p>
+  </div>
+</main>
+
+<!-- 3. Verify: prove control of the mailbox the document was sent to.
+
+     An emailed signing link is a bearer token - forward the mail and you
+     forward the ability to sign. This screen is what a forwarded link reaches:
+     no document, no signer name, only the masked address that can unlock it. -->
+<main id="screen-verify" class="screen center" hidden>
+  <div class="card verify-card">
+    <h1>Verify your email</h1>
+    <p id="verifyIntro">
+      Before opening this document we need to confirm you are the person it was
+      sent to.
+    </p>
+
+    <p class="verify-sent" id="verifySentWrap" hidden>
+      We emailed a 6-digit code to <strong id="verifySentTo"></strong>
+    </p>
+
+    <button class="btn btn-primary" id="sendCodeBtn" type="button">Email me a code</button>
+
+    <div id="codeEntry" hidden>
+      <label class="code-label" for="codeInput">Enter the 6-digit code</label>
+      <!-- inputmode numeric brings up the digit keypad on a phone, which is
+           where most people will read the code. -->
+      <input id="codeInput" class="code-input" type="text" inputmode="numeric"
+             autocomplete="one-time-code" maxlength="6" placeholder="000000"
+             aria-describedby="verifyError">
+      <button class="btn btn-primary" id="verifyBtn" type="button" disabled>
+        Verify and open document
+      </button>
+      <button class="btn btn-quiet" id="resendBtn" type="button">
+        Send a new code
+      </button>
+    </div>
+
+    <p class="error" id="verifyError" role="alert" hidden></p>
+    <p class="verify-note">
+      This code confirms it is you. Do not share it with anyone - not even a
+      colleague asking to sign on your behalf.
+    </p>
+  </div>
+</main>
+
+<!-- 4. Signing -->
+<main id="screen-signing" class="screen layout" hidden>
+
+  <section class="doc-pane">
+    <div id="pdfContainer" class="pdf-container"></div>
+  </section>
+
+  <aside class="sidebar">
+
+    <div class="card">
+      <h1 class="doc-title" id="docName"></h1>
+      <div class="signer-line">
+        <strong id="signerName"></strong>
+        <span class="role" id="signerRole"></span>
+      </div>
+      <div class="position" id="signerPosition"></div>
+    </div>
+
+    <div class="card" id="senderMessageWrap" hidden>
+      <h2>Message from the sender</h2>
+      <p class="message" id="senderMessage"></p>
+    </div>
+
+    <div class="card">
+      <h2>Your signature</h2>
+      <div id="sigPreview" class="sig-preview" hidden></div>
+      <button type="button" id="openMaker" class="btn btn-secondary">Add signature</button>
+    </div>
+
+    <div class="card" id="timelineWrap" hidden>
+      <h2>Already signed</h2>
+      <ol class="timeline" id="timelineList"></ol>
+    </div>
+
+    <!-- Shown BEFORE signing: what is about to be recorded, while declining
+         is still an option. -->
+    <div class="card session">
+      <h2>This session</h2>
+      <p class="session-intro">This is what will be recorded with your signature.</p>
+      <dl class="session-rows" id="sessionRows"></dl>
+    </div>
+
+    <div class="card consent">
+      <label class="consent-label">
+        <input type="checkbox" id="consentCheck">
+        <span id="consentText"></span>
+      </label>
+      <p class="error" id="submitError" hidden></p>
+      <button type="button" id="submitBtn" class="btn btn-primary" disabled>
+        Sign document
+      </button>
+    </div>
+
+  </aside>
+</main>
+
+<!-- 5. Done: waiting for others, or the download -->
+<main id="screen-done" class="screen center" hidden>
+  <div class="card done">
+    <div class="tick" aria-hidden="true">✓</div>
+    <h1 id="doneTitle"></h1>
+    <p id="doneBody"></p>
+
+    <dl class="done-facts">
+      <div><dt>Document</dt><dd id="doneFileName"></dd></div>
+      <div><dt>Document hash (SHA-256)</dt><dd class="hash" id="doneHash"></dd></div>
+    </dl>
+
+    <div id="waitingWrap" hidden>
+      <p class="progress" id="progressText"></p>
+      <p class="waiting-label">Still to sign</p>
+      <ul class="waiting-list" id="waitingList"></ul>
+    </div>
+
+    <div id="downloadWrap" hidden>
+      <a class="btn btn-primary" id="downloadLink" download>Download signed document</a>
+    </div>
+  </div>
+</main>
+
+<!-- The signature maker -->
+<div class="modal" id="sigModal" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-label="Create your signature">
+    <div class="modal-head">
+      <h2>Create your signature</h2>
+      <div class="tabs">
+        <button type="button" id="tabType" class="tab active">Type it</button>
+        <button type="button" id="tabDraw" class="tab">Draw it</button>
+      </div>
+    </div>
+
+    <div class="modal-body">
+      <div id="paneType">
+        <label class="field">
+          <span>Your name</span>
+          <input type="text" id="typedInput" autocomplete="name" spellcheck="false">
+        </label>
+        <div class="face-list" id="faceList"></div>
+      </div>
+
+      <div id="paneDraw" hidden>
+        <canvas id="drawCanvas" class="draw-canvas"></canvas>
+        <div class="draw-tools">
+          <p class="hint" id="drawHint">Draw your signature above using a mouse, trackpad or finger.</p>
+          <button type="button" id="clearDraw" class="btn btn-quiet">Clear</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-foot">
+      <button type="button" id="cancelSig" class="btn btn-quiet">Cancel</button>
+      <button type="button" id="acceptSig" class="btn btn-primary" disabled>Use this signature</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+{
+  "name": "esign-api",
+  "version": "1.0.0",
+  "description": "AWS signing service for the e-sign flow. Salesforce remains the system of record; this is working space.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=../.env src/server.js",
+    "dev": "node --env-file-if-exists=../.env src/server.js",
+    "start:legacy": "node src/local-server.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "seed": "node --env-file-if-exists=../.env scripts/seed.js",
+    "verify": "node scripts/upload-test.mjs",
+    "make-pdf": "node scripts/make-test-pdf.js"
+  },
+  "dependencies": {
+    "compression": "^1.8.1",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
+    "helmet": "^8.3.0",
+    "nodemailer": "^9.1.1",
+    "zod": "^4.5.4"
+  }
+}

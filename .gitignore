@@ -1,0 +1,29 @@
+# Secrets. The .env file holds SMTP credentials and the shared secret, so it
+# must never be committed - a key in git history stays there even after the
+# file is deleted. .env.example is the safe, checked-in template.
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Stored envelopes, tokens, sessions and signed PDFs. Real documents and real
+# signatures - never commit these.
+backend/data/
+data/
+
+# Generated test documents
+test-document.pdf
+*.tmp
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor and OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

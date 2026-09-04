@@ -1,0 +1,320 @@
+:root {
+  --ink: #111827;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --accent: #1d4ed8;
+  --accent-ink: #ffffff;
+  --warn: #b45309;
+  --error: #b91c1c;
+  --ok: #047857;
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.1);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1 { font-size: 19px; margin: 0 0 8px; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+     color: var(--muted); margin: 0 0 10px; }
+p { margin: 0 0 10px; }
+
+/* --- chrome --- */
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 12px 20px;
+  background: var(--card); border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 10;
+}
+.brand { font-weight: 600; font-size: 14px; }
+.topbar-doc { color: var(--muted); font-size: 13px; }
+
+.screen { padding: 20px; }
+/* display:flex/grid below would otherwise override the hidden attribute, and
+   every screen would render stacked on top of the others. */
+.screen[hidden] { display: none !important; }
+.center {
+  min-height: calc(100vh - 53px);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 14px;
+}
+
+.card {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow);
+}
+
+/* --- layout --- */
+.layout {
+  display: grid; grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 20px; align-items: start; max-width: 1400px; margin: 0 auto;
+}
+/* The sidebar sticks, but is never given its own scrollbar: a nested scroll
+   pane hides the consent tick and the submit button below the fold, and a
+   signer should never have to hunt for the control that signs the document.
+   If it is taller than the viewport, it simply scrolls with the page. */
+.sidebar { display: flex; flex-direction: column; gap: 14px; }
+@media (min-width: 981px) {
+  .sidebar { position: sticky; top: 73px; }
+}
+@media (max-width: 980px) {
+  .layout { grid-template-columns: 1fr; }
+}
+
+/* --- document --- */
+.pdf-container { display: flex; flex-direction: column; gap: 16px; }
+.page-wrap {
+  position: relative; background: var(--card);
+  border: 1px solid var(--line); border-radius: 6px;
+  overflow: hidden; box-shadow: var(--shadow);
+}
+
+/* The signature box. Positioned by percentage after the coordinate flip in
+   viewer.js, so it scales with the page. */
+.sig-box {
+  position: absolute;
+  border: 2px dashed var(--accent);
+  background: rgba(29,78,216,.07);
+  border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  animation: pulse 2.4s ease-in-out infinite;
+}
+.sig-box.filled {
+  border-style: solid; background: transparent; animation: none;
+  border-color: rgba(29,78,216,.35);
+}
+.sig-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.sig-box-label {
+  font-size: 11px; font-weight: 600; color: var(--accent);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(29,78,216,.25); }
+  50%      { box-shadow: 0 0 0 6px rgba(29,78,216,0); }
+}
+
+/* --- sidebar content --- */
+.doc-title { font-size: 16px; word-break: break-word; }
+.signer-line { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.role {
+  font-size: 12px; color: var(--muted);
+  background: var(--bg); border: 1px solid var(--line);
+  border-radius: 999px; padding: 1px 8px;
+}
+.position { color: var(--muted); font-size: 13px; margin-top: 4px; }
+.message { white-space: pre-wrap; }
+
+.sig-preview {
+  border: 1px solid var(--line); border-radius: 6px; background: var(--bg);
+  padding: 8px; margin-bottom: 10px; min-height: 70px;
+  display: flex; align-items: center; justify-content: center;
+}
+.sig-preview img { max-height: 70px; max-width: 100%; }
+
+.timeline { list-style: none; margin: 0; padding: 0;
+            display: flex; flex-direction: column; gap: 10px; }
+.timeline li { border-left: 2px solid var(--ok); padding-left: 10px; }
+.tl-name { font-weight: 600; font-size: 14px; }
+.tl-meta { color: var(--muted); font-size: 12px; }
+.tl-hash {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px; color: var(--muted);
+  word-break: break-all; margin-top: 2px;
+}
+
+/* --- "This session" --- */
+.session-intro { color: var(--muted); font-size: 13px; }
+.session-rows { margin: 0; display: flex; flex-direction: column; gap: 7px; }
+.session-row { display: grid; grid-template-columns: 92px 1fr; gap: 8px; align-items: baseline; }
+.session-row dt { color: var(--muted); font-size: 12px; }
+.session-row dd {
+  margin: 0; font-size: 13px; word-break: break-word;
+  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+}
+/* Server-observed and browser-reported are visually distinguished, because
+   they carry different evidential weight. */
+.src {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .05em;
+  border-radius: 3px; padding: 1px 4px; white-space: nowrap;
+}
+.src-server  { background: #ecfdf5; color: var(--ok);    border: 1px solid #a7f3d0; }
+.src-browser { background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+
+/* --- consent + submit --- */
+.consent-label { display: flex; gap: 10px; align-items: flex-start;
+                 font-size: 13px; cursor: pointer; }
+.consent-label input { margin-top: 3px; flex: none; width: 16px; height: 16px; }
+.error { color: var(--error); font-size: 13px; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  font: inherit; font-weight: 600; font-size: 14px;
+  padding: 10px 16px; border-radius: 8px; border: 1px solid transparent;
+  cursor: pointer; width: 100%; text-decoration: none;
+}
+.btn-primary { background: var(--accent); color: var(--accent-ink); }
+.btn-primary:hover:not(:disabled) { background: #1e40af; }
+.btn-secondary { background: var(--card); color: var(--ink); border-color: var(--line); }
+.btn-secondary:hover { background: var(--bg); }
+.btn-quiet { background: transparent; color: var(--muted); width: auto; padding: 8px 12px; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.consent .btn-primary { margin-top: 12px; }
+
+/* --- notices --- */
+.notice, .done { max-width: 520px; text-align: center; }
+.waiting-on {
+  background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 10px; margin: 0;
+}
+.tick {
+  width: 44px; height: 44px; border-radius: 50%;
+  background: #ecfdf5; color: var(--ok);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; margin: 0 auto 12px;
+}
+.done-facts { text-align: left; margin: 16px 0;
+              display: flex; flex-direction: column; gap: 8px; }
+.done-facts div { display: flex; flex-direction: column; gap: 2px; }
+.done-facts dt { color: var(--muted); font-size: 12px; }
+.done-facts dd { margin: 0; font-size: 13px; word-break: break-all; }
+.hash { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+.progress { font-weight: 600; }
+.waiting-label { color: var(--muted); font-size: 12px; text-transform: uppercase;
+                 letter-spacing: .04em; margin-bottom: 4px; }
+.waiting-list { list-style: none; padding: 0; margin: 0; }
+.waiting-list li { padding: 4px 0; border-bottom: 1px solid var(--line); }
+
+.spinner {
+  width: 28px; height: 28px; border-radius: 50%;
+  border: 3px solid var(--line); border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* --- modal --- */
+.modal {
+  position: fixed; inset: 0; background: rgba(17,24,39,.5);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px; z-index: 50;
+}
+.modal[hidden] { display: none !important; }
+.modal-box {
+  background: var(--card); border-radius: 12px;
+  width: min(560px, 100%); max-height: 90vh;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.modal-head { padding: 16px; border-bottom: 1px solid var(--line); }
+.modal-head h2 { color: var(--ink); font-size: 16px; text-transform: none;
+                 letter-spacing: 0; margin-bottom: 12px; }
+.modal-body { padding: 16px; overflow-y: auto; }
+.modal-foot {
+  padding: 12px 16px; border-top: 1px solid var(--line);
+  display: flex; gap: 10px; justify-content: flex-end;
+}
+.modal-foot .btn-primary { width: auto; }
+
+.tabs { display: flex; gap: 4px; background: var(--bg); padding: 3px;
+        border-radius: 8px; width: fit-content; }
+.tab {
+  font: inherit; font-size: 13px; font-weight: 600;
+  padding: 6px 14px; border: 0; background: transparent;
+  color: var(--muted); border-radius: 6px; cursor: pointer;
+}
+.tab.active { background: var(--card); color: var(--ink); box-shadow: var(--shadow); }
+
+.field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 14px; }
+.field span { font-size: 12px; color: var(--muted); }
+.field input {
+  font: inherit; padding: 9px 11px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--card);
+}
+.field input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+/* Four faces, four real font stacks. */
+.face-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.face {
+  position: relative; background: var(--card);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 14px 10px 20px; cursor: pointer; min-height: 78px;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.face.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(29,78,216,.15); }
+.face-sample {
+  font-size: 26px; color: var(--ink); line-height: 1.2;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
+.face-name {
+  position: absolute; bottom: 4px; left: 0; right: 0;
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em;
+}
+
+.draw-canvas {
+  width: 100%; height: 200px; touch-action: none; cursor: crosshair;
+  border: 1px dashed var(--line); border-radius: 8px; background: var(--card);
+  display: block;
+}
+.draw-tools { display: flex; align-items: center; justify-content: space-between;
+              gap: 10px; margin-top: 8px; }
+.hint { color: var(--muted); font-size: 12px; margin: 0; }
+.hint.warn { color: var(--warn); }
+
+/* --- email verification --- */
+
+.verify-card { max-width: 420px; text-align: left; }
+
+.verify-sent {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+/* The code gets typed by someone copying six digits off a phone: wide tracking
+   and a monospace face make a transposed digit visible before it is sent. */
+.code-input {
+  width: 100%;
+  margin: 4px 0 12px;
+  padding: 12px 14px;
+  font: 600 22px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: .32em;
+  text-align: center;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.code-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(29, 78, 216, .12);
+}
+
+.code-input::placeholder { color: var(--line); letter-spacing: .32em; }
+
+.code-label {
+  display: block;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--muted);
+}
+
+#codeEntry { margin-top: 14px; }
+
+.verify-note {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
