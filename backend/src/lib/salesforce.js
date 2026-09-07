@@ -5,7 +5,7 @@
    service off-platform apply here. */
 
 import { createSign } from 'node:crypto';
-import { documentKey, currentVersion, orderedSigners } from './envelope.js';
+import { documentKey, currentVersion, signersBySigningTime } from './envelope.js';
 import { formatIstDay } from './datetime.js';
 
 /* JWT bearer flow. No library: it is three base64url segments and one RS256
@@ -47,11 +47,15 @@ function b64url(s) {
 
 /* Map a signer to the E_Sign_Request__c fields.
 
+   `position` is where this signature falls in the SIGNING sequence, counted
+   from 1, and `total` how many there are. Both come from the caller, which
+   is the only place that knows the whole envelope.
+
    locationStatus is passed straight through because it was validated on the
    way in. Salesforce rejects any other value and fails the WHOLE record. */
-function auditRecord(envelope, signer, requestNumber) {
+function auditRecord(envelope, signer, requestNumber, position, total) {
   return {
-    Name: `${signer.name} - ${formatDay(signer.signedAt)}`.slice(0, 80),
+    Name: `${sequenceLabel(position, total)} ${signer.name} - ${formatDay(signer.signedAt)}`.slice(0, 80),
     Signature_Request_Id__c: envelope.externalId,
     File_Name__c: envelope.signedFileName,
     Signer_Name__c: signer.name,
@@ -74,6 +78,18 @@ function auditRecord(envelope, signer, requestNumber) {
     Status__c: 'Signed',
     Signed_Via__c: 'Public Link',
   };
+}
+
+/* The ordinal that opens the record name, so a user scanning the related
+   list sees who signed first without opening anything.
+
+   Zero-padded ONLY once an envelope has ten or more signatures, where it has
+   to be: a related list sorted by Name puts "10." before "2." otherwise, and
+   an audit trail that presents itself in the wrong order is worse than one
+   that presents no order at all. Below ten, padding would read as a version
+   number rather than a position. */
+function sequenceLabel(position, total) {
+  return total >= 10 ? `${String(position).padStart(2, '0')}.` : `${position}.`;
 }
 
 /* The record NAME carries the IST day, so a user scanning the related list in
@@ -119,16 +135,24 @@ function deviceOf(ua = '') {
    write-back is unrecoverable, so nothing is removed until Salesforce has
    confirmed every write. */
 export async function completeEnvelope({ envelope, store, client, mailer, senderEmail, requestNumber }) {
-  const signers = orderedSigners(envelope);
+  /* SIGNING SEQUENCE, not `order`. The audit rows are created in the sequence
+     the signatures were actually taken, so the related list in Salesforce -
+     which a user reads by CreatedDate - tells the same story as the
+     certificate page in the PDF. Ordering them by box position instead would
+     put the two records in conflict over who signed first. */
+  const signers = signersBySigningTime(envelope);
 
   const version = currentVersion(envelope);
   const key = documentKey(envelope.envelopeId, version);
   const pdf = await store.getObject(key);
   if (!pdf) throw new Error(`Final document missing from storage at ${key}; nothing written back.`);
 
-  // 1. audit rows
-  for (const s of signers) {
-    await client.create('E_Sign_Request__c', auditRecord(envelope, s, requestNumber));
+  // 1. audit rows, in the sequence the signatures were taken
+  for (let i = 0; i < signers.length; i++) {
+    await client.create(
+      'E_Sign_Request__c',
+      auditRecord(envelope, signers[i], requestNumber, i + 1, signers.length),
+    );
   }
 
   // 2. mark the request signed

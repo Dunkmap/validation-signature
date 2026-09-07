@@ -105,7 +105,9 @@ test('audit rows carry the fields Salesforce requires, per signer', async () => 
   assert.equal(priya.Signer_Browser__c, 'Chrome');
   assert.equal(priya.Signer_OS__c, 'Windows');
   assert.equal(priya.Signer_Device_Type__c, 'Desktop');
-  assert.match(priya.Name, /^Priya Sharma - \d+ \w+ \d{4}$/);
+  // The name opens with the signing position, so the related list reads in
+  // the order the document was actually signed.
+  assert.match(priya.Name, /^1\. Priya Sharma - \d+ \w+ \d{4}$/);
 
   // Each signer keeps their own hash: signer 1 never saw signer 2's signature.
   assert.equal(rows[1].Document_Hash__c, 'h2');
@@ -115,6 +117,31 @@ test('audit rows carry the fields Salesforce requires, per signer', async () => 
   assert.equal(rows[1].Location_Status__c, 'Denied');
 });
 
+test('audit rows are written in SIGNING order, not box order', async () => {
+  const { store, envelope } = await seeded();
+  /* The signer placed FIRST on the page signs LAST. Box position and signing
+     sequence now disagree, which is the only condition under which the two
+     can be told apart - and the case the certificate and the related list
+     have to agree on. */
+  envelope.signers[0].signedAt = '2026-09-03T11:00:00Z';
+  const client = fakeClient();
+  await completeEnvelope({
+    envelope, store, client, mailer: createConsoleMailer({ log: () => {} }),
+    senderEmail: 'sender@example.com', requestNumber: 'REQ-000031',
+  });
+
+  const rows = client.calls
+    .filter((c) => c.sobject === 'E_Sign_Request__c')
+    .map((c) => c.fields);
+
+  assert.deepEqual(
+    rows.map((r) => r.Signer_Name__c),
+    ['Dillin Nair', 'Priya Sharma'],
+    'Dillin signed at 10:00 and Priya at 11:00, so Dillin is row 1',
+  );
+  assert.match(rows[0].Name, /^1\. Dillin Nair/);
+  assert.match(rows[1].Name, /^2\. Priya Sharma/);
+});
 test('a failed audit write aborts BEFORE anything is deleted', async () => {
   const { store, envelope } = await seeded();
   const client = fakeClient({ failOn: 'E_Sign_Request__c' });

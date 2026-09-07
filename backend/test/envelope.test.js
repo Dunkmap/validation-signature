@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildSignedFileName, currentSigner, turnRefusal, waitingOn, isComplete,
-  signedSoFar, orderedSigners, SIGNER_STATUS,
+  signedSoFar, orderedSigners, signersBySigningTime, SIGNER_STATUS,
 } from '../src/lib/envelope.js';
 
 const S = (order, name, status = SIGNER_STATUS.PENDING, extra = {}) => ({
@@ -14,6 +14,48 @@ test('signers are ordered by their order field, not array position', () => {
   assert.deepEqual(orderedSigners(env).map((s) => s.name), ['Priya', 'Dillin', 'Arun']);
 });
 
+test('signing sequence is by time signed, not by box position', () => {
+  const env = { signers: [
+    S(1, 'Priya', SIGNER_STATUS.SIGNED, { signedAt: '2026-09-03T11:00:00Z' }),
+    S(2, 'Dillin', SIGNER_STATUS.SIGNED, { signedAt: '2026-09-03T09:00:00Z' }),
+    S(3, 'Arun', SIGNER_STATUS.SIGNED, { signedAt: '2026-09-03T10:00:00Z' }),
+  ] };
+  assert.deepEqual(
+    signersBySigningTime(env).map((s) => s.name),
+    ['Dillin', 'Arun', 'Priya'],
+  );
+});
+
+test('a signer who has not signed has no place in the sequence', () => {
+  const env = { signers: [
+    S(1, 'Priya', SIGNER_STATUS.SIGNED, { signedAt: '2026-09-03T09:00:00Z' }),
+    S(2, 'Dillin'),
+  ] };
+  assert.deepEqual(signersBySigningTime(env).map((s) => s.name), ['Priya']);
+});
+
+test('simultaneous signatures fall back to box position, never at random', () => {
+  /* Signing is unordered, so the same second is a real case. Two rebuilds of
+     one document must never number the same signatures differently. */
+  const at = '2026-09-03T09:00:00Z';
+  const env = { signers: [
+    S(2, 'Dillin', SIGNER_STATUS.SIGNED, { signedAt: at }),
+    S(1, 'Priya', SIGNER_STATUS.SIGNED, { signedAt: at }),
+  ] };
+  assert.deepEqual(signersBySigningTime(env).map((s) => s.name), ['Priya', 'Dillin']);
+});
+
+test('a signature with no usable timestamp goes last, disturbing nobody', () => {
+  const env = { signers: [
+    S(1, 'Priya', SIGNER_STATUS.SIGNED, { signedAt: null }),
+    S(2, 'Dillin', SIGNER_STATUS.SIGNED, { signedAt: '2026-09-03T09:00:00Z' }),
+    S(3, 'Arun', SIGNER_STATUS.SIGNED, { signedAt: '2026-09-03T10:00:00Z' }),
+  ] };
+  assert.deepEqual(
+    signersBySigningTime(env).map((s) => s.name),
+    ['Dillin', 'Arun', 'Priya'],
+  );
+});
 test('the current signer is the first who has not signed', () => {
   const env = { signers: [
     S(1, 'Priya', SIGNER_STATUS.SIGNED),
@@ -65,6 +107,19 @@ test('the timeline shows everyone who has signed so far, in any position', () =>
   assert.deepEqual(signedSoFar(env, env.signers[1]).map((t) => t.name), ['Arun']);
 });
 
+test('the timeline reads in signing order, matching the certificate', () => {
+  /* Real timestamps here, unlike the test above: box order and signing order
+     disagree, so this is the case that tells the two apart. */
+  const env = { signers: [
+    S(1, 'Priya', SIGNER_STATUS.SIGNED, { signedAt: '2026-09-07T11:45:00Z' }),
+    S(2, 'Dillin', SIGNER_STATUS.SIGNED, { signedAt: '2026-09-07T10:15:00Z' }),
+    S(3, 'Arun', SIGNER_STATUS.SIGNED, { signedAt: '2026-09-07T09:02:00Z' }),
+  ] };
+  assert.deepEqual(
+    signedSoFar(env).map((t) => t.name),
+    ['Arun', 'Dillin', 'Priya'],
+  );
+});
 test('each timeline entry carries that signer OWN hash', () => {
   const env = { signers: [
     S(1, 'Priya', SIGNER_STATUS.SIGNED, { signedAt: 'a', documentHash: 'hash-one' }),

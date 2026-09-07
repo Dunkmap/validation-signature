@@ -21,6 +21,38 @@ export function orderedSigners(envelope) {
   return [...envelope.signers].sort((a, b) => a.order - b.order);
 }
 
+/* Signers in the sequence they actually SIGNED, earliest first.
+
+   Distinct from orderedSigners, and the distinction matters: `order` is where
+   a signature sits on the page, chosen by the sender before anybody signed.
+   This is the record of what happened - who signed first, who second - which
+   is what the certificate and the Salesforce audit trail present.
+
+   Signing is unordered, so two people signing in the same second is a real
+   case rather than a theoretical one. `order` breaks the tie, so the sequence
+   is deterministic: rebuilding the same document twice can never produce two
+   different numberings of the same signatures. */
+export function compareBySignedAt(a, b) {
+  const ta = Date.parse(a?.signedAt ?? '');
+  const tb = Date.parse(b?.signedAt ?? '');
+  /* A signature with no usable timestamp cannot be placed in the sequence.
+     It goes last rather than wherever NaN would put it - an unsortable value
+     silently reordering everyone else is the kind of bug that only shows up
+     on a finished contract. */
+  if (Number.isNaN(ta) && Number.isNaN(tb)) return (a?.order ?? 0) - (b?.order ?? 0);
+  if (Number.isNaN(ta)) return 1;
+  if (Number.isNaN(tb)) return -1;
+  if (ta !== tb) return ta - tb;
+  return (a?.order ?? 0) - (b?.order ?? 0);
+}
+
+/* Everyone who has signed, in signing sequence. Signers still outstanding are
+   absent: they have no position in a record of what has happened. */
+export function signersBySigningTime(envelope) {
+  return envelope.signers
+    .filter((s) => s.status === SIGNER_STATUS.SIGNED)
+    .sort(compareBySignedAt);
+}
 export function findSigner(envelope, signerId) {
   return envelope.signers.find((s) => s.signerId === signerId) || null;
 }
@@ -53,9 +85,11 @@ export function signedCount(envelope) {
    signed so far, which may be nobody even if they are last in the list. The
    signer themselves is excluded - their own signature is not yet taken. */
 export function signedSoFar(envelope, signer = null) {
-  return orderedSigners(envelope)
-    .filter((s) => s.status === SIGNER_STATUS.SIGNED
-                && (!signer || s.signerId !== signer.signerId))
+  /* SIGNING ORDER, the same sequence the certificate page and the Salesforce
+     audit rows use. This is a record of what has happened, and the three
+     places that present it must not disagree about who signed first. */
+  return signersBySigningTime(envelope)
+    .filter((s) => !signer || s.signerId !== signer.signerId)
     .map((s) => ({
       name: s.name,
       role: s.role || '',

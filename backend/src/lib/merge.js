@@ -17,6 +17,7 @@
 
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { formatIst, formatIstWithUtc } from './datetime.js';
+import { compareBySignedAt } from './envelope.js';
 
 const MARGIN = 54;
 const INK = rgb(0.07, 0.09, 0.15);
@@ -73,12 +74,26 @@ export async function mergeSignatures({ originalBytes, signers }) {
   return Buffer.from(await out.save());
 }
 
-/* One certificate page per signer, in `order`. Order no longer controls who
-   may sign, but it still decides the sequence they are presented in, which
-   keeps the finished document predictable. */
+/* The certificate: a summary table of who signed and when, then one detail
+   block per signer.
+
+   BOTH ARE IN SIGNING SEQUENCE - earliest signature first - not in `order`,
+   which is only where a box sits on the page. A certificate is a record of
+   what happened, and what happened has a sequence: whoever signed first is
+   numbered 1 in the table and carries that same number on their block below,
+   so a reader can move between the two without matching names by eye.
+
+   The table exists because the blocks alone do not answer "who signed this,
+   and when" without reading every one of them. Twenty signers is a permitted
+   envelope, and twenty blocks is not something anyone scans. */
 async function appendCertificates(pdf, signers) {
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+
+  /* Sorted on a COPY. The caller's array is the merge list, and reordering it
+     underneath them to suit this page would be a side effect nobody reading
+     mergeSignatures could see. */
+  const sequence = [...signers].sort((a, b) => compareBySignedAt(a.signer, b.signer));
 
   let page = pdf.addPage([595.28, 841.89]); // A4
   let y = page.getHeight() - MARGIN;
@@ -120,19 +135,82 @@ async function appendCertificates(pdf, signers) {
     y -= 2;
   };
 
+  /* Table columns, as offsets from the left margin. Fixed positions rather
+     than wrapped cells: a long name that wrapped onto a second line would
+     leave the timestamp beside it stranded against the wrong row, and the
+     full untruncated name is repeated on that signer's own block anyway. */
+  const COL = { seq: 0, name: 26, role: 210, time: 322 };
+  const CELL = {
+    seq: COL.name - COL.seq - 6,
+    name: COL.role - COL.name - 6,
+    role: COL.time - COL.role - 6,
+    time: width - COL.time,
+  };
+
+  /* Truncate to the column, with an ellipsis so a shortened value is visibly
+     shortened. A silently clipped name reads as the signer's actual name. */
+  const fit = (value, f, size, maxWidth) => {
+    let s = String(value ?? '');
+    if (f.widthOfTextAtSize(s, size) <= maxWidth) return s;
+    while (s.length > 1 && f.widthOfTextAtSize(`${s}...`, size) > maxWidth) {
+      s = s.slice(0, -1);
+    }
+    return `${s}...`;
+  };
+
+  const tableRow = (cells, { f = font, size = 9, color = INK } = {}) => {
+    room(15);
+    for (const key of ['seq', 'name', 'role', 'time']) {
+      page.drawText(fit(cells[key], f, size, CELL[key]), {
+        x: MARGIN + COL[key], y, size, font: f, color,
+      });
+    }
+    y -= 15;
+  };
+
   page.drawText('Certificate of electronic signature', {
     x: MARGIN, y, size: 16, font: bold, color: INK,
   });
   y -= 26;
   text('This page records who signed this document, when, and what was observed '
-     + 'about each signing session. Signatures were taken independently and in '
-     + 'no fixed order. Times are Indian Standard Time (IST, UTC+5:30); the '
-     + 'UTC value each one was recorded as is shown in brackets.',
+     + 'about each signing session. Signatures were taken independently - nobody '
+     + 'waited for anybody else - and are listed here in the order they were '
+     + 'signed, earliest first. Times are Indian Standard Time (IST, UTC+5:30); '
+     + 'the UTC value each one was recorded as is shown in brackets.',
     { size: 9.5, color: MUTED });
   y -= 6;
 
-  for (const { signer, mergeError } of signers) {
-    heading(`${signer.name}${signer.role ? ` - ${signer.role}` : ''}`);
+  /* Keep the table whole. A header stranded at the foot of one page with its
+     rows on the next is worse than a table that starts further down. */
+  room(48 + sequence.length * 15);
+
+  heading(`Signing sequence - ${sequence.length} ${sequence.length === 1 ? 'signature' : 'signatures'}`);
+  tableRow(
+    { seq: '#', name: 'Signer', role: 'Role', time: 'Signed at (IST)' },
+    { f: bold, size: 8.5, color: MUTED },
+  );
+  y += 4;
+  page.drawLine({
+    start: { x: MARGIN, y }, end: { x: MARGIN + width, y },
+    thickness: 0.5, color: RULE,
+  });
+  y -= 11;
+
+  sequence.forEach(({ signer }, i) => {
+    tableRow({
+      seq: String(i + 1),
+      name: signer.name,
+      role: signer.role || '-',
+      time: formatIst(signer.signedAt),
+    });
+  });
+
+  sequence.forEach(({ signer, mergeError }, i) => {
+    heading(`${i + 1}. ${signer.name}${signer.role ? ` - ${signer.role}` : ''}`);
+    /* The position restated on the block itself, because a block read on its
+       own - quoted, printed, pulled into evidence - must still say where in
+       the sequence this signature falls. */
+    row('Signing sequence', `${i + 1} of ${sequence.length}`);
     /* IST first - the signer must recognise the time they signed - with the
        stored UTC alongside, which is the canonical value the hash and the
        Salesforce record were written against. */
@@ -162,7 +240,7 @@ async function appendCertificates(pdf, signers) {
         { size: 9, color: rgb(0.7, 0.1, 0.1) });
     }
     y -= 8;
-  }
+  });
 }
 
 function locationLine(s) {
