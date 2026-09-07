@@ -235,7 +235,11 @@ async function renderSigningScreen() {
   el('topbarDoc').textContent = d.fileName;
   el('signerName').textContent = d.signerName;
   el('signerRole').textContent = d.signerRole || '';
-  el('signerPosition').textContent = `Signer ${d.signOrder} of ${d.signerCount}`;
+  /* Say how many signers there are, not which position this one holds - a
+     position implies a queue, and there is none. */
+  el('signerPosition').textContent = d.signerCount > 1
+    ? `One of ${d.signerCount} signers`
+    : 'Sole signer';
   el('senderMessage').textContent = d.message || '';
   el('senderMessageWrap').hidden = !d.message;
 
@@ -483,10 +487,21 @@ function bytesToBase64(bytes) {
   return btoa(bin);
 }
 
+/* Always Indian Standard Time, and always labelled.
+
+   Not the browser's own zone: a signer on a laptop still set to another
+   country would otherwise read a different time from the one printed on the
+   certificate, for the same signature. One zone everywhere, named on screen so
+   nobody has to guess which. */
 function formatWhen(iso) {
   const dt = new Date(iso);
   if (isNaN(dt)) return '';
-  return new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short' }).format(dt);
+  const s = new Intl.DateTimeFormat('en-GB', {
+    day: 'numeric', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+    timeZone: 'Asia/Kolkata',
+  }).format(dt);
+  return `${s.replace('Sept', 'Sep')} IST`;
 }
 
 function escapeHtml(s) {

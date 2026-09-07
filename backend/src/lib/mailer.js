@@ -1,3 +1,5 @@
+import { formatIst } from './datetime.js';
+
 /* Signer emails.
 
    Two drivers, chosen by ESIGN_MAIL:
@@ -19,9 +21,8 @@ function invitationBody({ signerName, fileName, message, url }) {
     'Open your signing link:',
     url,
     '',
-    'If several people are signing, the document goes to them in order. If it is not',
-    'your turn yet, the page will tell you who it is waiting for - your link stays',
-    'valid, so simply open it again later.',
+    'If several people are signing, you can sign whenever suits you - there is no',
+    'order to wait for, and you will not hold anyone else up.',
   ].filter((l) => l !== '').join('\n');
 }
 
@@ -55,7 +56,7 @@ function completionBody({ fileName, signers }) {
     `"${fileName}" has been signed by everyone.`,
     '',
     'Signed by:',
-    ...signers.map((s) => `  - ${s.name}${s.role ? ` (${s.role})` : ''} on ${s.signedAt}`),
+    ...signers.map((s) => `  - ${s.name}${s.role ? ` (${s.role})` : ''} on ${formatIst(s.signedAt)}`),
     '',
     'A copy has been filed against the request record.',
   ].join('\n');

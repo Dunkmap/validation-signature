@@ -1,12 +1,22 @@
-/* Envelope rules: whose turn it is, and what the finished file is called.
+/* Envelope rules: who has signed, and what the finished file is called.
+
+   Signing is UNORDERED. Every signer may sign whenever they like, including
+   at the same moment as someone else. Nobody waits on anybody.
+
+   Because of that, each signature is stamped onto its OWN copy of the original
+   document rather than onto whatever the previous signer produced - two people
+   signing at once would otherwise overwrite each other, and one signature
+   would silently vanish. The finished document is assembled by merging every
+   signature back onto the original. See mergeSignatures in lib/merge.js.
 
    Pure functions over plain objects - no AWS, no I/O - so the behaviour that
    matters can be tested directly. */
 
 export const SIGNER_STATUS = { PENDING: 'Pending', SIGNED: 'Signed' };
 
-/* Signers sorted by their signing order. Never trust array position: the
-   envelope's `order` field is what decides. */
+/* Signers sorted by `order`. Order no longer gates anything - it is kept
+   because it decides where each signature is DISPLAYED (the certificate, the
+   completion email), and a stable, predictable sequence there is worth having. */
 export function orderedSigners(envelope) {
   return [...envelope.signers].sort((a, b) => a.order - b.order);
 }
@@ -15,7 +25,8 @@ export function findSigner(envelope, signerId) {
   return envelope.signers.find((s) => s.signerId === signerId) || null;
 }
 
-/* The first signer who has not yet signed. */
+/* The first signer who has not yet signed. Nothing depends on this for
+   permission any more; it is here for display and for the completion email. */
 export function currentSigner(envelope) {
   return orderedSigners(envelope).find((s) => s.status !== SIGNER_STATUS.SIGNED) || null;
 }
@@ -24,6 +35,7 @@ export function isComplete(envelope) {
   return envelope.signers.every((s) => s.status === SIGNER_STATUS.SIGNED);
 }
 
+/* Who has not signed yet. Not a queue - just everyone still outstanding. */
 export function waitingOn(envelope) {
   return orderedSigners(envelope)
     .filter((s) => s.status !== SIGNER_STATUS.SIGNED)
@@ -34,11 +46,16 @@ export function signedCount(envelope) {
   return envelope.signers.filter((s) => s.status === SIGNER_STATUS.SIGNED).length;
 }
 
-/* Everyone who signed before this signer, in order - what the certificate page
-   prints as the chain, and what the signing page shows in its timeline. */
-export function timelineBefore(envelope, signer) {
+/* Everyone who has ALREADY signed, whoever they are.
+
+   Previously this was "everyone before you in the order". With unordered
+   signing there is no before: what a signer should see is simply who has
+   signed so far, which may be nobody even if they are last in the list. The
+   signer themselves is excluded - their own signature is not yet taken. */
+export function signedSoFar(envelope, signer = null) {
   return orderedSigners(envelope)
-    .filter((s) => s.status === SIGNER_STATUS.SIGNED && s.order < signer.order)
+    .filter((s) => s.status === SIGNER_STATUS.SIGNED
+                && (!signer || s.signerId !== signer.signerId))
     .map((s) => ({
       name: s.name,
       role: s.role || '',
@@ -52,21 +69,21 @@ export function timelineBefore(envelope, signer) {
     }));
 }
 
+/* Kept under the old name so nothing that still imports it breaks; it now
+   means "who has signed so far", not "who came before you". */
+export const timelineBefore = signedSoFar;
+
 /* Why a signer may not sign right now, or null if they may.
 
-   Every refusal returns the same sentence, so a stranger probing tokens learns
-   nothing about which exist - with ONE deliberate exception: NOT_YOUR_TURN
-   names the person being waited on. Whoever holds that token was already told
-   they are a signer on this document, so it reveals nothing they did not have,
-   and refusing them with "not valid" would send them chasing a replacement
-   link that behaves identically. */
+   With ordering removed there is exactly one reason left: they have already
+   signed. A token is good for ONE signature, whenever its holder chooses to
+   use it - never twice.
+
+   The refusal is the same sentence used for an unknown or expired token, so a
+   stranger probing tokens still learns nothing about which exist. */
 export function turnRefusal(envelope, signer) {
   if (signer.status === SIGNER_STATUS.SIGNED) {
     return { reason: 'REFUSED' };
-  }
-  const current = currentSigner(envelope);
-  if (current && current.signerId !== signer.signerId) {
-    return { reason: 'NOT_YOUR_TURN', waitingOn: current.name };
   }
   return null;
 }
@@ -108,8 +125,8 @@ function clipToLimit(name, prefix = '') {
   return prefix + stem.slice(0, room) + ext;
 }
 
-/* The S3 key for a given signature version. Each version is kept: the download
-   serves the stored bytes, never a re-render, because pdf-lib stamps a fresh
+/* The S3 key for a given stored artefact. Every version is kept: the download
+   serves stored bytes, never a re-render, because pdf-lib stamps a fresh
    creation date and new object ids on every save. */
 export function documentKey(envelopeId, version) {
   return `envelopes/${envelopeId}/v${version}.pdf`;
@@ -119,7 +136,22 @@ export function originalKey(envelopeId) {
   return documentKey(envelopeId, 0);
 }
 
-/* The version a given signer should be served: everything signed so far. */
+/* Where one signer's own stamped copy lives. Unordered signing means these
+   are produced independently and in any order, so they are keyed by SIGNER,
+   never by a running version number two people could claim at once. */
+export function signerDocumentKey(envelopeId, signerId) {
+  return `envelopes/${envelopeId}/by-signer/${signerId}.pdf`;
+}
+
+/* The merged document carrying every signature taken so far. Rewritten after
+   each signature, so it is always current. */
+export function mergedKey(envelopeId) {
+  return `envelopes/${envelopeId}/merged.pdf`;
+}
+
+/* Retained for the Salesforce write-back, which still asks for "the current
+   version". Every signer signs the ORIGINAL now, so what a signer is served is
+   always version 0 - the merge happens afterwards, server-side. */
 export function currentVersion(envelope) {
   return signedCount(envelope);
 }

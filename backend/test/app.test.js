@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { createApp } from '../src/app.js';
 import { createMemoryStore } from '../src/lib/store.js';
 import { createConsoleMailer } from '../src/lib/mailer.js';
+import { PDFDocument } from 'pdf-lib';
 
 const SECRET = 'test-secret';
 const ORIGIN = 'http://127.0.0.1:3000';
@@ -37,7 +38,19 @@ function start({ rateLimit } = {}) {
   });
 }
 
-const pdf = (n = 1) => Buffer.from(`%PDF-1.4\nv${n}\n%%EOF`).toString('base64');
+/* Real PDFs: signatures are merged server-side with pdf-lib, which cannot
+   parse a "%PDF-..." stub. */
+const realPdf = async (label) => {
+  const doc = await PDFDocument.create();
+  doc.addPage([595.28, 841.89]).drawText(String(label), { x: 60, y: 700, size: 12 });
+  return Buffer.from(await doc.save());
+};
+const pdfBytes = {
+  0: await realPdf('original'),
+  1: await realPdf('signed 1'),
+  2: await realPdf('signed 2'),
+};
+const pdf = (n = 1) => pdfBytes[n].toString('base64');
 
 const envelope = () => ({
   externalId: 'a03bm00001np9fh',
@@ -221,18 +234,18 @@ test('GET /sign is rate limited, the endpoint an attacker can hammer', async () 
   } finally { await t.close(); }
 });
 
-// --- the ordered flow, over HTTP ---
+// --- the unordered flow, over HTTP ---
 
-test('the ordered flow works end to end over the real server', async () => {
+test('any signer may sign at any time, end to end over the real server', async () => {
   const t = await start();
   try {
     const created = await (await post(t, '/envelopes', envelope(), { 'X-Esign-Secret': SECRET })).json();
     const [t1, t2] = created.signers.map((s) => s.url.split('/s/')[1]);
 
-    // Signer 2 is refused by name until signer 1 has signed.
+    /* Signer 2 opens before signer 1 and is NOT refused for it - only the
+       email verification stands between them and the document. */
     const early = await (await fetch(t.url(`/sign/${t2}`))).json();
-    assert.equal(early.reason, 'NOT_YOUR_TURN');
-    assert.equal(early.waitingOn, 'Priya Sharma');
+    assert.equal(early.reason, 'VERIFICATION_REQUIRED');
 
     const h1 = await verify(t, t1);
     const open1 = await (await fetch(t.url(`/sign/${t1}`), { headers: h1 })).json();
@@ -247,10 +260,12 @@ test('the ordered flow works end to end over the real server', async () => {
     assert.equal(sign1.ok, true);
     assert.equal(sign1.complete, false);
 
-    // Signer 2 now receives the version carrying signature 1, and its hash.
+    /* Signer 2 receives the ORIGINAL - never signer 1's file - but still sees
+       signer 1 in the timeline, with signer 1's own hash. */
     const h2 = await verify(t, t2);
     const open2 = await (await fetch(t.url(`/sign/${t2}`), { headers: h2 })).json();
     assert.equal(open2.ok, true);
+    assert.equal(open2.ordered, false);
     assert.equal(open2.timeline[0].hash, sign1.documentHash);
 
     const sign2 = await (await post(t, `/sign/${t2}`, {

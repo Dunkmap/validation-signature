@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildSignedFileName, currentSigner, turnRefusal, waitingOn, isComplete,
-  timelineBefore, orderedSigners, SIGNER_STATUS,
+  signedSoFar, orderedSigners, SIGNER_STATUS,
 } from '../src/lib/envelope.js';
 
 const S = (order, name, status = SIGNER_STATUS.PENDING, extra = {}) => ({
@@ -25,18 +25,23 @@ test('the current signer is the first who has not signed', () => {
   assert.equal(isComplete(env), false);
 });
 
-test('an out-of-turn signer is refused by name, not with the generic refusal', () => {
-  const env = { signers: [S(1, 'Priya'), S(2, 'Dillin')] };
-  const r = turnRefusal(env, env.signers[1]);
-  assert.equal(r.reason, 'NOT_YOUR_TURN');
-  // The one deliberate disclosure: whoever holds this token already knows they
-  // are a signer, so naming who we wait on reveals nothing they did not have.
-  assert.equal(r.waitingOn, 'Priya');
+test('ANY signer who has not signed may sign, whatever their position', () => {
+  const env = { signers: [S(1, 'Priya'), S(2, 'Dillin'), S(3, 'Arun')] };
+  // Nobody waits on anybody: the last in the list may go first.
+  assert.equal(turnRefusal(env, env.signers[0]), null);
+  assert.equal(turnRefusal(env, env.signers[1]), null);
+  assert.equal(turnRefusal(env, env.signers[2]), null);
 });
 
-test('the signer whose turn it is may sign', () => {
-  const env = { signers: [S(1, 'Priya'), S(2, 'Dillin')] };
-  assert.equal(turnRefusal(env, env.signers[0]), null);
+test('signing out of listed order leaves everyone else still able to sign', () => {
+  const env = { signers: [
+    S(1, 'Priya'),
+    S(2, 'Dillin', SIGNER_STATUS.SIGNED),   // signed first, though listed second
+    S(3, 'Arun'),
+  ] };
+  assert.equal(turnRefusal(env, env.signers[0]), null, 'Priya may still sign');
+  assert.equal(turnRefusal(env, env.signers[2]), null, 'Arun may still sign');
+  assert.equal(turnRefusal(env, env.signers[1]).reason, 'REFUSED', 'Dillin is done');
 });
 
 test('a signer who already signed is refused generically, revealing nothing', () => {
@@ -46,16 +51,18 @@ test('a signer who already signed is refused generically, revealing nothing', ()
   assert.equal(r.waitingOn, undefined);
 });
 
-test('the timeline shows only signatures taken BEFORE this signer', () => {
+test('the timeline shows everyone who has signed so far, in any position', () => {
   const env = { signers: [
-    S(1, 'Priya', SIGNER_STATUS.SIGNED, { signedAt: 'a', documentHash: 'h1', ip: '1.1.1.1' }),
+    S(1, 'Priya'),
     S(2, 'Dillin', SIGNER_STATUS.SIGNED, { signedAt: 'b', documentHash: 'h2', ip: '2.2.2.2' }),
-    S(3, 'Arun'),
+    S(3, 'Arun', SIGNER_STATUS.SIGNED, { signedAt: 'c', documentHash: 'h3', ip: '3.3.3.3' }),
   ] };
-  // Signer 2 never saw signer 3's signature - and signer 1 saw neither.
-  assert.deepEqual(timelineBefore(env, env.signers[1]).map((t) => t.name), ['Priya']);
-  assert.deepEqual(timelineBefore(env, env.signers[2]).map((t) => t.name), ['Priya', 'Dillin']);
-  assert.deepEqual(timelineBefore(env, env.signers[0]), []);
+  /* Priya is listed FIRST and has not signed, yet she sees two signatures.
+     Under the old ordered rule she would have seen none - which is exactly the
+     behaviour that had to go. */
+  assert.deepEqual(signedSoFar(env, env.signers[0]).map((t) => t.name), ['Dillin', 'Arun']);
+  // A signer never appears in their own timeline.
+  assert.deepEqual(signedSoFar(env, env.signers[1]).map((t) => t.name), ['Arun']);
 });
 
 test('each timeline entry carries that signer OWN hash', () => {
@@ -63,7 +70,7 @@ test('each timeline entry carries that signer OWN hash', () => {
     S(1, 'Priya', SIGNER_STATUS.SIGNED, { signedAt: 'a', documentHash: 'hash-one' }),
     S(2, 'Dillin'),
   ] };
-  assert.equal(timelineBefore(env, env.signers[1])[0].hash, 'hash-one');
+  assert.equal(signedSoFar(env, env.signers[1])[0].hash, 'hash-one');
 });
 
 // --- filename ---

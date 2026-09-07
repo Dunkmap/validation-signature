@@ -5,6 +5,14 @@
 .env.*
 !.env.example
 
+# Signing certificates and private keys. A private key committed to git stays
+# recoverable from history even after the file is deleted.
+certs/
+*.pfx
+*.p12
+*.pem
+*.key
+
 # Dependencies
 node_modules/
 

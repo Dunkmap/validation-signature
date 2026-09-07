@@ -5,6 +5,7 @@
 import { createApp } from './app.js';
 import { createStore } from './lib/store.js';
 import { createMailer } from './lib/mailer.js';
+import { loadSigningCertificate, isSigningEnabled } from './lib/digital-signature.js';
 
 const PORT = Number(process.env.PORT || 4000);
 const FRONTEND = process.env.ESIGN_FRONTEND_URL || 'http://127.0.0.1:3000';
@@ -22,9 +23,23 @@ if (!SECRET) {
 const store = createStore();
 const mailer = createMailer();
 
+/* Load the signing certificate at startup, so a missing file or a wrong
+   passphrase is a line in this console rather than a signer who has finished
+   signing and cannot be given their document. Off unless ESIGN_PDF_SIGN=true. */
+let signingCertificate = null;
+try {
+  signingCertificate = await loadSigningCertificate();
+} catch (e) {
+  console.error(`
+  PDF signing is enabled but could not start: ${e.message}
+`);
+  process.exit(1);
+}
+
 const app = createApp({
   store,
   mailer,
+  signingCertificate,
   config: {
     sharedSecret: SECRET,
     // Links in emails point at the frontend, which is where a signer opens
@@ -73,6 +88,13 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`\nAPI          http://127.0.0.1:${PORT}`);
   console.log(`  storage    ${store.driver}${store.root ? ` (${store.root})` : ''}`);
   console.log(`  email      ${mailer.driver}`);
+  /* Say plainly whether documents are being cryptographically signed, and with
+     what. "self-signed" is not a warning to hide: it is exactly why Adobe will
+     show a yellow triangle, and someone reading this console should know that
+     before a client asks about it. */
+  console.log(`  pdf sign   ${signingCertificate
+    ? `on (${signingCertificate.path})`
+    : 'off (set ESIGN_PDF_SIGN=true to enable)'}`);
   if (mailer.delivers === false) {
     // Never let this be a surprise discovered from an empty inbox.
     console.log('             ^ prints only - NOTHING IS DELIVERED');

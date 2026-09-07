@@ -39,7 +39,9 @@ function authorised(headers, secret) {
   return timingSafeEqual(a, b);
 }
 
-export function createRouter({ store, mailer, config, onComplete, allow = createRateLimiter() }) {
+export function createRouter({
+  store, mailer, config, onComplete, allow = createRateLimiter(), signingCertificate = null,
+}) {
   /* The session secret travels in a header, never the URL - a query string
      lands in access logs, history and Referer headers. Header names arrive
      lower-cased from API Gateway but not from every caller, so accept both. */
@@ -93,7 +95,7 @@ export function createRouter({ store, mailer, config, onComplete, allow = create
         return submitSignature({
           token, body, store, clientIp, onComplete,
           requestNumber: config.requestNumber,
-          sessionSecret: sessionOf(headers),
+          sessionSecret: sessionOf(headers), signingCertificate,
         });
       }
     }

@@ -6,6 +6,7 @@
 
 import { createSign } from 'node:crypto';
 import { documentKey, currentVersion, orderedSigners } from './envelope.js';
+import { formatIstDay } from './datetime.js';
 
 /* JWT bearer flow. No library: it is three base64url segments and one RS256
    signature. */
@@ -75,12 +76,14 @@ function auditRecord(envelope, signer, requestNumber) {
   };
 }
 
+/* The record NAME carries the IST day, so a user scanning the related list in
+   Salesforce sees the date they would have written down.
+
+   Signed_At__c itself stays the raw UTC ISO string: Salesforce stores datetimes
+   in UTC and renders them in each user's own timezone, so converting before
+   the write would shift every displayed time by 5.5 hours. */
 function formatDay(iso) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  return new Intl.DateTimeFormat('en-GB', {
-    day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC',
-  }).format(d);
+  return formatIstDay(iso);
 }
 
 function browserOf(ua = '') {

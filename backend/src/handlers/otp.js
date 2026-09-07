@@ -51,24 +51,11 @@ export async function requestOtp({ token, store, mailer, now = new Date() }) {
 
   const { envelope, signer } = found;
 
-  /* Do not send a code to someone who cannot sign anyway. Mailing a code for a
-     document that will then refuse them is a confusing dead end, and it would
-     let a stranger holding a stale token trigger mail to a real person. */
-  const refusal = turnRefusal(envelope, signer);
-  if (refusal) {
-    if (refusal.reason !== 'NOT_YOUR_TURN') return refused();
-    return {
-      status: 200,
-      body: {
-        ok: false,
-        reason: 'NOT_YOUR_TURN',
-        waitingOn: refusal.waitingOn,
-        error: 'It is not your turn to sign yet. This document goes to its signers in '
-             + `order, and ${refusal.waitingOn} has not signed it yet. Your link stays `
-             + 'valid - open it again later.',
-      },
-    };
-  }
+  /* Do not send a code to someone who cannot sign anyway - here, someone who
+     has already signed. Mailing a code for a document that will then refuse
+     them is a confusing dead end, and it would let a stranger holding a spent
+     token trigger mail to a real person. */
+  if (turnRefusal(envelope, signer)) return refused();
 
   const tokenHash = tokenLookupKey(token);
   const existing = await store.getChallenge(tokenHash);
@@ -108,10 +95,43 @@ export async function requestOtp({ token, store, mailer, now = new Date() }) {
       minutes: Math.round(OTP_TTL_MS / 60000),
     });
   } catch (e) {
-    /* A code nobody received must not look like a code that was sent - that
-       leaves a signer staring at an empty inbox with no idea why. Report it,
-       and do not store the challenge: there is no point holding a code that
-       was never delivered. */
+    /* Mail failed. There are two honest responses, and which one is right
+       depends on whether a person is standing at the page trying to test it.
+
+       ESIGN_OTP_CONSOLE_FALLBACK=true prints the code to the server console and
+       lets the flow continue. That is a DEVELOPMENT setting: it turns the
+       second factor into something readable by anyone with log access, which
+       defeats the point of having one. It exists so a broken mail provider does
+       not block work on everything else, and it says so loudly every time. */
+    if (process.env.ESIGN_OTP_CONSOLE_FALLBACK === 'true') {
+      console.warn(
+        `\n[otp] ---- MAIL FAILED, FALLING BACK TO THE CONSOLE ----\n`
+        + `[otp] mail error: ${e.message}\n`
+        + `[otp] to:   ${signer.email}\n`
+        + `[otp] CODE: ${code}\n`
+        + `[otp] This is a development fallback (ESIGN_OTP_CONSOLE_FALLBACK=true).\n`
+        + `[otp] The code was NOT emailed. Turn this off before real signers use it.\n`
+        + `[otp] ---- end ----\n`,
+      );
+      await store.putChallenge(tokenHash, challenge);
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          sentTo: maskEmail(signer.email),
+          expiresInSeconds: Math.round(OTP_TTL_MS / 1000),
+          warning: 'The code could NOT be emailed - the mail server refused it. It has '
+                 + 'been printed to the server console instead, because the development '
+                 + 'fallback is on. No signer received anything.',
+          mailError: e.message,
+        },
+      };
+    }
+
+    /* The default. A code nobody received must not look like a code that was
+       sent - that leaves a signer staring at an empty inbox with no idea why.
+       Report it, and do not store the challenge: there is no point holding a
+       code that was never delivered. */
     return {
       status: 502,
       body: {

@@ -112,9 +112,17 @@ async function appendCertificate(pdf, d) {
   row('Role', d.signerRole);
   row('Signature method', d.signMethod);
 
+  /* IST first: it is the business timezone this service runs in, and the one
+     the signer and whoever files the document both work in. UTC stays as the
+     canonical record, and the browser's own zone is kept because it is
+     evidence about the signing session - it may differ from both, and that
+     difference is worth being able to see. */
   heading('When');
+  row('IST', formatIst(d.signedAt));
   row('UTC', formatUtc(d.signedAt));
-  row('Local', formatLocal(d.signedAt, d.browser.timezone));
+  if (d.browser.timezone && d.browser.timezone !== 'Asia/Kolkata') {
+    row('Signer local', formatLocal(d.signedAt, d.browser.timezone));
+  }
 
   /* The server-observed value gets its own section, deliberately separate from
      the browser-reported ones below, because they carry different evidential
@@ -134,7 +142,7 @@ async function appendCertificate(pdf, d) {
     heading('Signed before this signature');
     for (const t of d.timeline) {
       text(`${t.name}${t.role ? ' - ' + t.role : ''}`, { f: bold, size: 10 });
-      row('  Signed at', formatUtc(t.signedAt));
+      row('  Signed at', formatIst(t.signedAt));
       row('  IP address', t.ip);
       // Each earlier signer's own hash, so the chain is checkable from outside
       // the system: every signature answers for the bytes that signer saw.
@@ -159,6 +167,19 @@ function describeLocation(loc) {
   }
   const acc = loc.accuracy != null ? ` (accurate to ~${loc.accuracy} m)` : '';
   return `Granted - ${loc.latitude}, ${loc.longitude}${acc}`;
+}
+
+/* Indian Standard Time, always labelled - never a bare time that invites the
+   reader to assume their own zone. */
+function formatIst(iso) {
+  const dt = new Date(iso);
+  if (isNaN(dt)) return '-';
+  const s = new Intl.DateTimeFormat('en-GB', {
+    day: 'numeric', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    timeZone: 'Asia/Kolkata',
+  }).format(dt);
+  return `${s.replace('Sept', 'Sep')} IST`;
 }
 
 function formatUtc(iso) {

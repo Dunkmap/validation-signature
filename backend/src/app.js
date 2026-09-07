@@ -21,7 +21,7 @@ import { envelopeSchema, signSubmissionSchema, tokenSchema, otpVerifySchema, for
 // A 4 MB document is ~5.5 MB of base64; allow headroom, not unlimited.
 const MAX_BODY = '12mb';
 
-export function createApp({ store, mailer, config, onComplete }) {
+export function createApp({ store, mailer, config, onComplete, signingCertificate = null }) {
   const app = express();
 
   /* Trust the proxy only when told to. Left on by default, anyone could spoof
@@ -185,7 +185,7 @@ export function createApp({ store, mailer, config, onComplete }) {
       send(res, await submitSignature({
         token: req.params.token, body: parsed.data, store,
         clientIp: clientIpOf(req), onComplete, requestNumber: config.requestNumber,
-        sessionSecret: sessionOf(req),
+        sessionSecret: sessionOf(req), signingCertificate,
       }));
     } catch (e) { next(e); }
   });

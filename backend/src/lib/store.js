@@ -33,6 +33,25 @@ export function createMemoryStore() {
       return e ? structuredClone(e) : null;
     },
 
+    /* Apply a change to ONE signer, re-reading the envelope inside the update
+       so a concurrent signature is not lost.
+
+       Two people may sign at the same moment. Each request read the envelope
+       when it began, so by the time it writes, its copy is stale and a plain
+       putEnvelope would erase the other signature. Read-modify-write here
+       instead, against the freshest record. */
+    async updateSigner(envelopeId, signerId, patch, finalise = null) {
+      const current = envelopes.get(envelopeId);
+      if (!current) return null;
+      const next = structuredClone(current);
+      next.signers = next.signers.map((s) => (s.signerId === signerId ? { ...s, ...patch } : s));
+      // Envelope-level fields (the filename, completion) are decided from the
+      // record as it stands AFTER this signature, inside the same update.
+      const done = finalise ? finalise(next) : next;
+      envelopes.set(envelopeId, done);
+      return structuredClone(done);
+    },
+
     async indexToken(tokenHash, ref) {
       tokenIndex.set(tokenHash, { ...ref });
     },
@@ -113,6 +132,27 @@ export function createDiskStore({ root }) {
     }
   })();
 
+  /* Serialise read-modify-write per envelope.
+
+     updateSigner reads the record, changes one signer, and writes it back.
+     Both steps await, so without this two concurrent signatures interleave:
+     each reads the same record, and the second write erases the first
+     signature. A queue keyed by envelope id makes those sequences atomic
+     within this process, while different envelopes stay fully parallel. */
+  const locks = new Map();
+  const withEnvelopeLock = (id, fn) => {
+    const prev = locks.get(id) || Promise.resolve();
+    // Chain onto the previous holder whether or not it succeeded.
+    const run = prev.then(fn, fn);
+    /* The stored tail swallows rejections, so one failed update cannot reject
+       the next waiter. Drop the entry once this is the last one in the chain,
+       so the map does not grow for the life of the process. */
+    const tail = run.then(() => {}, () => {});
+    locks.set(id, tail);
+    tail.then(() => { if (locks.get(id) === tail) locks.delete(id); });
+    return run;
+  };
+
   /* A key from a hash is already 64 hex characters, but never build a path
      from an unsanitised value: a stray ../ would write outside the root. */
   const safeName = (v) => String(v).replace(/[^0-9a-f]/gi, '').slice(0, 128);
@@ -152,6 +192,29 @@ export function createDiskStore({ root }) {
     async getEnvelope(id) {
       await ready;
       return readJson(join(ENV_DIR, `${id}.json`));
+    },
+
+    /* Apply a change to ONE signer, re-reading the envelope inside the update
+       and holding the envelope lock across both steps.
+
+       The lock is per-process. Across processes or instances it is not enough,
+       and a hosted database driver should use a conditional write or a
+       transaction here - the interface is shaped to allow exactly that. */
+    async updateSigner(envelopeId, signerId, patch, finalise = null) {
+      await ready;
+      return withEnvelopeLock(envelopeId, async () => {
+        const path = join(ENV_DIR, `${envelopeId}.json`);
+        const current = await readJson(path);
+        if (!current) return null;
+        current.signers = current.signers.map((s) => (
+          s.signerId === signerId ? { ...s, ...patch } : s
+        ));
+        // Envelope-level fields (the filename, completion) are decided from
+        // the record as it stands AFTER this signature, inside the same lock.
+        const done = finalise ? finalise(current) : current;
+        await writeJson(path, done);
+        return done;
+      });
     },
 
     async indexToken(tokenHash, ref) {

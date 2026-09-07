@@ -1,8 +1,9 @@
-/* The three-signer ordered flow, end to end through the router.
+/* The three-signer flow, end to end through the router.
 
-   This is the part that could not be built on Salesforce, where a guest user
-   cannot insert a ContentVersion and so signer 2 could never countersign
-   signer 1's work. */
+   Signing is UNORDERED: anyone may sign whenever they like, including at the
+   same moment as someone else. These tests cover both - signing out of the
+   listed order, and two people submitting concurrently without either
+   signature being lost. */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,12 +11,26 @@ import { createMemoryStore } from '../src/lib/store.js';
 import { createConsoleMailer } from '../src/lib/mailer.js';
 import { createRouter, createRateLimiter } from '../src/router.js';
 import { sha256Hex } from '../src/lib/tokens.js';
+import { PDFDocument } from 'pdf-lib';
 
 const SECRET = 'test-secret';
 const BASE = 'https://sign.example.com';
 
-// A PDF that grows with each signature, as the real one does.
-const pdfWith = (n) => Buffer.from(`%PDF-1.4\ndocument with ${n} signature(s)\n%%EOF`);
+/* Real PDFs, not stubs.
+
+   Signatures are now merged server-side with pdf-lib, so the bytes have to be
+   a document it can actually parse. A fake "%PDF-..." string passed the old
+   chained flow, which only ever stored bytes; it cannot pass a merge. */
+const realPdf = async (label) => {
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([595.28, 841.89]);
+  page.drawText(String(label), { x: 60, y: 700, size: 12 });
+  return Buffer.from(await doc.save());
+};
+
+// Each signer stamps their own copy of the original, so "n" is just a label.
+let pdfCache = {};
+const pdfWith = (n) => pdfCache[n];
 
 function setup({ onComplete } = {}) {
   const store = createMemoryStore();
@@ -27,6 +42,14 @@ function setup({ onComplete } = {}) {
   });
   return { store, mailer, route };
 }
+
+// Built once, before the tests run: pdf-lib is async, the helpers are not.
+pdfCache = {
+  0: await realPdf('original'),
+  1: await realPdf('signed by 1'),
+  2: await realPdf('signed by 2'),
+  3: await realPdf('signed by 3'),
+};
 
 const envelopeBody = (expiresAt) => ({
   externalId: 'a03bm00001np9fh',
@@ -105,82 +128,85 @@ test('POST /envelopes returns one link per signer', async () => {
   assert.equal(res.body.signers.length, 3);
   for (const s of res.body.signers) assert.match(s.url, /^https:\/\/sign\.example\.com\/s\/[0-9a-f]{64}$/);
 
-  // Every signer is emailed at once; ORDER is enforced when the page opens.
+  // Every signer is emailed at once, and any of them may sign immediately.
   assert.equal(mailer._sent().length, 3);
 });
 
-test('the ordered flow: each signer sees the previous signatures, out-of-turn is refused', async () => {
+test('ANY signer may sign at any time, in any order', async () => {
   const { route, mailer } = setup();
   const created = await create(route, envelopeBody());
   const [t1, t2, t3] = [0, 1, 2].map((i) => tokenOf(created, i));
 
-  // Signer 2 opens early: refused BY NAME, and told their link stays valid.
-  const early = await route({ method: 'GET', path: `/sign/${t2}`, clientIp: '1.2.3.4' });
-  assert.equal(early.body.ok, false);
-  assert.equal(early.body.reason, 'NOT_YOUR_TURN');
-  assert.equal(early.body.waitingOn, 'Priya Sharma');
-  assert.match(early.body.error, /stays valid/);
-
-  // Signer 1 opens: it is their turn, with no timeline yet.
-  const h1 = await verify(route, mailer, t1);
-  const open1 = await route({
-    method: 'GET', path: `/sign/${t1}`, clientIp: '203.0.113.44', headers: h1,
+  /* Signer 3 - LAST in the list - goes first. Under the old ordered rule this
+     was refused with NOT_YOUR_TURN; it is now simply allowed. */
+  const h3 = await verify(route, mailer, t3);
+  const open3 = await route({
+    method: 'GET', path: `/sign/${t3}`, clientIp: '192.0.2.7', headers: h3,
   });
-  assert.equal(open1.body.ok, true);
-  assert.equal(open1.body.signOrder, 1);
-  assert.equal(open1.body.signerCount, 3);
-  assert.deepEqual(open1.body.timeline, []);
-  assert.equal(open1.body.signerIp, '203.0.113.44', 'the server-observed IP is returned');
+  assert.equal(open3.body.ok, true, 'the last-listed signer may open first');
+  assert.deepEqual(open3.body.timeline, [], 'nobody has signed yet');
+  assert.equal(open3.body.ordered, false, 'the page is told there is no queue');
 
-  // Signer 1 signs.
-  const sign1 = await submit(route, t1, 1, {}, h1);
-  assert.equal(sign1.body.ok, true);
-  assert.equal(sign1.body.complete, false);
-  assert.deepEqual(sign1.body.waitingOn, ['Dillin Nair', 'Arun Mehta']);
-  assert.equal(sign1.body.fileName, 'Signed - REQ-000031 - Asset_Handover_Form.pdf');
+  const sign3 = await submit(route, t3, 3, {}, h3);
+  assert.equal(sign3.body.ok, true);
+  assert.equal(sign3.body.complete, false);
 
-  // Now signer 2 may open, and receives the document WITH signature 1 on it.
+  // Signer 2 next, then signer 1 last. Every order is legitimate.
   const h2 = await verify(route, mailer, t2);
   const open2 = await route({
     method: 'GET', path: `/sign/${t2}`, clientIp: '198.51.100.9', headers: h2,
   });
   assert.equal(open2.body.ok, true);
-  assert.equal(Buffer.from(open2.body.documentBase64, 'base64').toString(),
-    pdfWith(1).toString(), 'signer 2 must receive the version carrying signature 1');
 
-  // And sees signer 1 in the timeline, with signer 1's own hash.
-  assert.equal(open2.body.timeline.length, 1);
-  assert.equal(open2.body.timeline[0].name, 'Priya Sharma');
-  assert.equal(open2.body.timeline[0].hash, sign1.body.documentHash);
-  assert.equal(open2.body.timeline[0].ip, '203.0.113.44');
+  /* Everyone is served the ORIGINAL, never another signer's work - that is
+     what makes simultaneous signing safe. */
+  assert.deepEqual(Buffer.from(open2.body.documentBase64, 'base64'), pdfWith(0),
+    'each signer receives the clean original');
 
-  // Signer 3 is still out of turn - and is told it is Dillin they wait on.
-  const early3 = await route({ method: 'GET', path: `/sign/${t3}`, clientIp: '1.2.3.4' });
-  assert.equal(early3.body.reason, 'NOT_YOUR_TURN');
-  assert.equal(early3.body.waitingOn, 'Dillin Nair');
+  // But they still SEE who has signed, even though that person is listed after.
+  assert.deepEqual(open2.body.timeline.map((t) => t.name), ['Arun Mehta']);
+  assert.equal(open2.body.timeline[0].hash, sign3.body.documentHash);
 
   const sign2 = await submit(route, t2, 2, {}, h2);
   assert.equal(sign2.body.complete, false);
 
-  // Signer 3 sees BOTH earlier signatures.
-  const h3 = await verify(route, mailer, t3);
-  const open3 = await route({
-    method: 'GET', path: `/sign/${t3}`, clientIp: '192.0.2.7', headers: h3,
-  });
-  assert.deepEqual(open3.body.timeline.map((t) => t.name), ['Priya Sharma', 'Dillin Nair']);
+  const h1 = await verify(route, mailer, t1);
+  const sign1 = await submit(route, t1, 1, {}, h1);
+  assert.equal(sign1.body.complete, true, 'the final signature completes it');
+  assert.deepEqual(sign1.body.waitingOn, []);
 
-  const sign3 = await submit(route, t3, 3, {}, h3);
-  assert.equal(sign3.body.complete, true, 'the last signer completes the envelope');
-  assert.deepEqual(sign3.body.waitingOn, []);
-
-  // Every hash differs: each signer signed a document with one fewer signature.
+  // Each signature carries its own honest hash of what that person submitted.
   const hashes = [sign1.body.documentHash, sign2.body.documentHash, sign3.body.documentHash];
   assert.equal(new Set(hashes).size, 3, 'each signature must have its own hash');
-  for (const h of hashes) assert.match(h, /^[0-9a-f]{64}$/);
-
-  // And each is the honest hash of what that person actually signed.
   assert.equal(sign1.body.documentHash, sha256Hex(pdfWith(1)));
   assert.equal(sign3.body.documentHash, sha256Hex(pdfWith(3)));
+});
+
+test('two signers signing AT THE SAME TIME both survive', async () => {
+  const { route, mailer } = setup();
+  const created = await create(route, envelopeBody());
+  const [t1, t2, t3] = [0, 1, 2].map((i) => tokenOf(created, i));
+
+  // Both verify and open before either submits - they hold the document at
+  // the same moment, which is exactly the case that used to lose a signature.
+  const h1 = await verify(route, mailer, t1);
+  const h2 = await verify(route, mailer, t2);
+  await route({ method: 'GET', path: `/sign/${t1}`, headers: h1, clientIp: '1.1.1.1' });
+  await route({ method: 'GET', path: `/sign/${t2}`, headers: h2, clientIp: '2.2.2.2' });
+
+  // Now both submit concurrently.
+  const [a, b] = await Promise.all([
+    submit(route, t1, 1, {}, h1),
+    submit(route, t2, 2, {}, h2),
+  ]);
+  assert.equal(a.body.ok, true);
+  assert.equal(b.body.ok, true);
+
+  /* Neither signature was lost: the envelope records BOTH. Chaining would have
+     kept only whichever saved last. */
+  const st = await route({ method: 'GET', path: `/status/${t3}`, clientIp: '1.1.1.1' });
+  assert.equal(st.body.signedCount, 2, 'both signatures must be recorded');
+  assert.deepEqual(st.body.waitingOn, ['Arun Mehta']);
 });
 
 test('the hash is computed server-side; a client-supplied hash is ignored', async () => {
@@ -289,11 +315,18 @@ test('the download serves the STORED bytes, identical every time', async () => {
   const a = await route({ method: 'GET', path: `/download/${t1}`, clientIp: '1.1.1.1' });
   const b = await route({ method: 'GET', path: `/download/${t2}`, clientIp: '1.1.1.1' });
 
-  // Never re-rendered: pdf-lib stamps a new creation date on every save, so a
-  // rebuild would not match the hash the certificate attests to.
-  assert.ok(a.body.equals(b.body), 'two downloads must be byte-identical');
-  assert.equal(sha256Hex(a.body), last.body.documentHash,
-    'and must match the final signature hash');
+  /* Never re-rendered on the way out: pdf-lib stamps a new creation date on
+     every save, so serving a fresh render would give a different file to each
+     caller. The merge is written once, when the signature is taken. */
+  assert.ok(Buffer.from(a.body).equals(Buffer.from(b.body)),
+    'two downloads must be byte-identical');
+
+  /* The merged document is NOT any one signer's bytes: it is the original with
+     every signature merged onto it, so its hash necessarily differs from each
+     individual signature hash. Each of those still attests to what that person
+     personally signed. */
+  assert.notEqual(sha256Hex(Buffer.from(a.body)), last.body.documentHash);
+  assert.match(last.body.documentHash, /^[0-9a-f]{64}$/);
 });
 
 test('completion runs the write-back, and its failure does not lose the signature', async () => {

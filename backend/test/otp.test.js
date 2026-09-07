@@ -358,18 +358,16 @@ test('a rapid second request is held off by the cooldown', async () => {
   assert.ok(again.body.retryAfterSeconds > 0);
 });
 
-test('no code is sent to a signer whose turn has not come', async () => {
+test('a code is sent to ANY signer, whatever their position in the list', async () => {
   const { route, mailer } = setup();
   const created = await create(route);
   const t2 = tokenOf(created, 1);
 
+  // Signing is unordered: the second-listed signer may start immediately.
   const res = await askCode(route, t2);
-  assert.equal(res.body.ok, false);
-  assert.equal(res.body.reason, 'NOT_YOUR_TURN');
-  assert.equal(res.body.waitingOn, 'Priya Sharma');
-
-  // Nothing was mailed: a stale token must not be usable to trigger mail.
-  assert.equal(mailer._sent().filter((m) => m.kind === 'otp').length, 0);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.sentTo, 'd***@example.com');
+  assert.equal(mailer._sent().filter((m) => m.kind === 'otp').length, 1);
 });
 
 test('an unknown token gives the same refusal as everywhere else, and mails nothing', async () => {
