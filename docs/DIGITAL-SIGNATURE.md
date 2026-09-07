@@ -112,26 +112,106 @@ each signature.
 
 ---
 
-## Regenerating the self-signed certificate
+## Creating (or regenerating) the self-signed certificate
 
-The one in `certs/` expires in 10 years. To make another (Git Bash):
+`certs/` is **not** in the repository — it is gitignored, because a private key
+committed to git history stays recoverable even after the file is deleted. So a
+fresh clone has no certificate, and `ESIGN_PDF_SIGN=true` refuses to start until
+you make one. This is how the current one was made.
 
-```
+**Run it from `backend/`, not the repository root.** `ESIGN_PDF_CERT` is
+resolved against the API's working directory, and the API starts in `backend/`
+(that is why its own start script reads `../.env`). A certificate written to
+the root `certs/` is a file the server will never find.
+
+### What openssl is
+
+OpenSSL is the standard command-line tool for cryptography — generating keys,
+creating certificates, packaging them. Nothing to install: it ships with **Git
+for Windows**, so it is already on PATH in Git Bash (`openssl version` here
+reports 3.5.6). Two commands are used below — one to generate the RSA key and
+self-signed certificate, one to package both into the `.pfx` the signing code
+loads.
+
+```bash
+cd backend
+mkdir -p certs
+
 MSYS_NO_PATHCONV=1 openssl req -x509 -newkey rsa:2048 \
   -keyout key.pem -out cert.pem -days 3650 -nodes \
   -subj "/CN=Exceller Technologies/O=Exceller Technologies/C=IN"
+
 MSYS_NO_PATHCONV=1 openssl pkcs12 -export -out certs/signing.pfx \
   -inkey key.pem -in cert.pem -passout pass:changeme
+
 rm -f key.pem cert.pem
 ```
 
 `MSYS_NO_PATHCONV=1` stops Git Bash rewriting the `-subj` argument as a Windows
 path.
 
-**`certs/` is gitignored.** A private key committed to git history stays
-recoverable even after the file is deleted.
+The final `rm` is not tidying. `-nodes` means `key.pem` is an **unencrypted**
+private key; leaving it next to the `.pfx` defeats the passphrase entirely.
+`.gitignore` already covers `*.pem`, so it was never at risk of being
+committed — but it should not survive on disk either.
 
----
+### No `-legacy` needed
+
+OpenSSL 3 exports PKCS#12 with AES-256-CBC and a SHA-256 MAC rather than the
+old 3DES/SHA-1 defaults, and older `node-forge` could not open that — the
+usual symptom being a startup failure that blames
+`ESIGN_PDF_CERT_PASSWORD` when the passphrase is in fact correct.
+
+Verified not to be a problem here: **OpenSSL 3.5.6 → `node-forge` 1.4.0 opens
+it as exported.** Do not add `-legacy`, `-keypbe PBE-SHA1-3DES` or
+`-macalg sha1` unless a startup failure actually tells you to.
+
+### Prove it before trusting it
+
+The test suite generates its own throwaway certificate per run, so a passing
+`npm test` says **nothing** about the file you just created. Load it through the
+same code the server uses:
+
+```bash
+cd backend
+node -e "
+import('./src/lib/digital-signature.js').then(async (m) => {
+  const c = await m.loadSigningCertificate({
+    ESIGN_PDF_SIGN: 'true',
+    ESIGN_PDF_CERT: './certs/signing.pfx',
+    ESIGN_PDF_CERT_PASSWORD: 'changeme',
+  });
+  console.log('OK', c.p12.length, 'bytes');
+}).catch((e) => { console.error('FAILED:', e.message); process.exit(1); });
+"
+```
+
+Then confirm the server agrees. The banner is unambiguous:
+
+```
+  pdf sign   on (./certs/signing.pfx)
+```
+
+### The certificate now in place
+
+| | |
+|---|---|
+| Subject / Issuer | `CN=Exceller Technologies, O=Exceller Technologies, C=IN` (self-signed) |
+| Key | RSA 2048 |
+| Valid | 2026-09-07 → 2036-09-04 |
+| SHA-256 fingerprint | `BE:A8:90:C6:43:12:35:52:0F:BB:C0:CB:E7:98:1A:4A:3F:F4:23:9D:BB:D0:57:60:FC:B9:37:62:92:EE:A3:67` |
+| Passphrase | `changeme` — the checked-in default in `.env.example` |
+
+The passphrase is deliberately the documented default so the flag works without
+further setup. It protects a **self-signed development key that Adobe will not
+trust anyway**; there is nothing here worth a secret. A purchased AATL
+certificate is different — give that one a real passphrase and keep it out of
+`.env.example`.
+
+A signature made with this certificate was verified end to end: `/Type /Sig`
+present, `/SubFilter /adbe.pkcs7.detached`, the CMS blob verifying against the
+exact bytes its `/ByteRange` covers, and **failing** once a single byte inside
+that range was flipped. Tamper detection is real, not assumed.
 
 ## A note on the dependencies
 
